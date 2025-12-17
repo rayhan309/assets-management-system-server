@@ -523,6 +523,8 @@ async function run() {
       }
     });
 
+    app.post('/payment');
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
