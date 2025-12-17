@@ -5,9 +5,7 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 3000;
 const admin = require("firebase-admin");
-const stripe = require("stripe")(
-  "sk_test_51Sc6AY3DE7BIUMWP12sSAXkuwVokEbTW9YxtWm4qyExNSa4DmsEc8wgKsqLBiJxw5IX8jQN05KpTWo4saTh2ng0300aAoR9BkM"
-);
+const stripe = require("stripe")(process.env.SRIPE_sdk);
 
 const serviceAccount = require("./firebase-admin.json");
 
