@@ -7,11 +7,10 @@ const port = process.env.PORT || 3000;
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.SRIPE_sdk);
 
-
-const decoded = Buffer.from(process.env.FIREBASE_SDK, 'base64').toString(
-	'utf8',
-)
-const serviceAccount = JSON.parse(decoded)
+const decoded = Buffer.from(process.env.FIREBASE_SDK, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -33,26 +32,12 @@ const verifyFirebaseToken = async (req, res, next) => {
   try {
     const token = firebaseToken.split(" ")[1];
     const verify = await admin.auth().verifyIdToken(token);
-    req.current_user = verify?.email;
+    req.current_user = verify.email;
     // console.log("verify token", verify);
   } catch {
     // console.log("mumma khaisu2!");
     return res.status(401).send({ message: "Unexpacted access" });
   }
-
-  next();
-};
-
-// hr & emploey check
-const verifyEmployee = async (req, res, next) => {
-  const role = req.decoded_role;
-  console.log({userRole: role})
-
-  next();
-};
-const verifyHR = async (req, res, next) => {
-  const role = req.decoded_role;
-  console.log({userRole: role})
 
   next();
 };
@@ -83,14 +68,45 @@ async function run() {
     const paymentCollection = myCollections.collection("payments");
     const memberShipeCollection = myCollections.collection("memberShipe");
 
+    // hr & emploey check
+    const verifyEmployee = async (req, res, next) => {
+      const email = req.current_user;
+
+      if (email) {
+        const query = { email };
+        const result = await usersCollection.findOne(query);
+        if (result.role === "EMPLOYEE") {
+          next();
+        } else {
+          res.status(403).send({ error: "Invalid access" });
+        }
+      }
+
+      next();
+    };
+
+    const verifyHR = async (req, res, next) => {
+      const email = req.current_user;
+
+      if (email) {
+        const query = { email };
+        const result = await usersCollection.findOne(query);
+        if (result.role === "HR_MANAGER") {
+          next();
+        } else {
+          res.status(403).send({ error: "Invalid access" });
+        }
+      }
+    };
+
     // priching apis
-    app.post("/priceing", async (req, res) => {
+    app.post("/priceing", verifyFirebaseToken, async (req, res) => {
       const query = req.body;
       const result = await priceingCollection.insertOne(query);
       res.send(result);
     });
 
-    app.get("/priceing", async (req, res) => {
+    app.get("/priceing", verifyFirebaseToken, verifyHR, async (req, res) => {
       const result = await priceingCollection.find().toArray();
       res.send(result);
     });
@@ -115,7 +131,35 @@ async function run() {
       }
     });
 
-    app.get("/users", async (req, res) => {
+    // hoi nai
+
+    app.patch("/users/root", verifyFirebaseToken, async (req, res) => {
+      try {
+        const email = req.query;
+        const { name, photo, dateOfBirth } = req.body;
+
+        if(!name || !photo || !dateOfBirth){
+         return req.send({message: 'Your info is undifined.'});
+        }
+
+        const query = {email};
+        const updateDoc = {
+          $set: {
+            name,
+            photo,
+            dateOfBirth,
+          }
+        }
+        const result = await usersCollection.updateOne(query, updateDoc);
+        // cons
+
+        res.send(result);
+      } catch {
+        res.status(500).send({ error: "Database update is failed" });
+      }
+    });
+
+    app.get("/users", verifyFirebaseToken, async (req, res) => {
       try {
         const email = req.query.email;
         const query = { email };
@@ -183,6 +227,44 @@ async function run() {
       }
     });
 
+    app.get("/assets/type", verifyFirebaseToken, verifyHR, async (req, res) => {
+      // console.log(req.headers.authorization);
+      try {
+        const result = await assetsCollection
+          .find()
+          .project({ productType: 1, requestCount: 1 })
+          .sort({ postAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch {
+        // console.log("mumma khaisu!");
+        res.status(500).send({ error: "Database insert failed" });
+      }
+    });
+
+    app.patch("/assets/:id", verifyFirebaseToken, async (req, res) => {
+      try {
+        const { productName, productType, productQuantity } = req.body;
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            productName: productName,
+            productType: productType,
+            productQuantity: Number(productQuantity),
+          },
+        };
+
+        const result = await assetsCollection.updateOne(query, updateDoc);
+
+        console.log({ productName, productType, productQuantity, id, result });
+
+        res.send({ message: "ok" });
+      } catch {
+        res.status(500).send({ error: "Database patch failed" });
+      }
+    });
+
     app.delete("/assets/:id", verifyFirebaseToken, async (req, res) => {
       // console.log(req.headers.authorization);
       try {
@@ -201,6 +283,18 @@ async function run() {
     app.post("/requests", async (req, res) => {
       try {
         const newRequest = req.body;
+
+        const requestInfo = req.body;
+        const exResult = await requestsCollection.findOne({
+          assetId: requestInfo.assetId,
+          requesterEmail: requestInfo.requesterEmail,
+        });
+
+        if (exResult) {
+          // console.log(exResult);
+          return res.send({ message: "alrady requested" });
+        }
+
         const result = await requestsCollection.insertOne(newRequest);
 
         const { assetId } = req.body;
@@ -221,7 +315,7 @@ async function run() {
 
     app.get("/requests", verifyFirebaseToken, async (req, res) => {
       const { email, type = "", search = "" } = req.query;
-      const query = {requestStatus: 'approved'};
+      const query = { requestStatus: "approved" };
       if (email) {
         query.requesterEmail = email;
       }
@@ -456,6 +550,7 @@ async function run() {
             employeeName: 1,
             employeImage: 1,
             assignmentDate: 1,
+            companyName: 1,
           })
           .toArray();
         // console.log("hahahhahahahahhaha");
@@ -480,11 +575,18 @@ async function run() {
       }
     );
 
-    app.delete("/approvedAssets/:email", verifyFirebaseToken, async (req, res) => {
+    app.delete("/approvedAssets", verifyFirebaseToken, async (req, res) => {
       try {
-        const id = req.params.id;
-        const query = { _id: email };
-        const result = await approvedAssetsCollection.deleteOne(query);
+        const { email, companyName } = req.query;
+        if (!email || !companyName) {
+          return res
+            .status(400)
+            .send({ error: "Email and Company Name are required." });
+        }
+        // const {companyName} = req.query.email;
+        const query = { employeeEmail: email, companyName };
+        const result = await approvedAssetsCollection.deleteMany(query);
+        // console.log(result);
         res.send(result);
       } catch {
         res.status(500).send({ error: "Database delete filed." });
@@ -492,110 +594,123 @@ async function run() {
     });
 
     // payment apis
-    app.post("/create-checkout-session", verifyHR, async (req, res) => {
-      const { price, customerEmail, name, _id, employeeLimit } = req.body;
-      const amoutn = parseInt(price * 100);
-      const session = await stripe.checkout.sessions.create({
-        line_items: [
-          {
-            // Provide the exact Price ID (for example, price_1234) of the product you want to sell
-            price_data: {
-              currency: "usd",
-              product_data: {
-                name: name,
+    app.post(
+      "/create-checkout-session",
+      verifyFirebaseToken,
+      async (req, res) => {
+        const { price, customerEmail, name, _id, employeeLimit } = req.body;
+        const amoutn = parseInt(price * 100);
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+              price_data: {
+                currency: "usd",
+                product_data: {
+                  name: name,
+                },
+                unit_amount: amoutn,
               },
-              unit_amount: amoutn,
+              quantity: 1,
             },
-            quantity: 1,
+          ],
+          customer_email: customerEmail,
+          metadata: {
+            customerEmail,
+            subscriptionsId: _id,
+            subscriptionsName: name,
+            employeeLimit: employeeLimit,
           },
-        ],
-        customer_email: customerEmail,
-        metadata: {
-          customerEmail,
-          subscriptionsId: _id,
-          subscriptionsName: name,
-          employeeLimit: employeeLimit,
-        },
-        mode: "payment",
-        success_url: `${process.env.SUCCESS_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.SUCCESS_DOMAIN}/dashboard/payment-cancle`,
-      });
-      console.log(req.body);
-      res.send({ url: session.url });
-    });
+          mode: "payment",
+          success_url: `${process.env.SUCCESS_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.SUCCESS_DOMAIN}/dashboard/payment-cancle`,
+        });
+        console.log(req.body);
+        res.send({ url: session.url });
+      }
+    );
 
     //         const session = await stripe.checkout.sessions.retrieve(session_id);
-    app.patch("/payment-success", verifyFirebaseToken, async (req, res) => {
-      try {
-        const { session_id } = req.query;
+    app.patch(
+      "/payment-success",
+      verifyFirebaseToken,
+      verifyHR,
+      async (req, res) => {
+        try {
+          const { session_id } = req.query;
 
-        // retrieve stripe session_id
-        const session = await stripe.checkout.sessions.retrieve(session_id);
+          // retrieve stripe session_id
+          const session = await stripe.checkout.sessions.retrieve(session_id);
 
-        const {
-          amount_subtotal: amount,
-          customer_email,
-          metadata,
-          payment_intent,
-          payment_status,
-        } = session;
+          const {
+            amount_subtotal: amount,
+            customer_email,
+            metadata,
+            payment_intent,
+            payment_status,
+          } = session;
 
-        if (payment_status === "paid") {
-          // check to datbase payment alrady korse ki na
-          const transactionIdQuery = { transactionId: payment_intent };
-          const exPayment = await paymentCollection.findOne(transactionIdQuery);
+          if (payment_status === "paid") {
+            // check to datbase payment alrady korse ki na
+            const transactionIdQuery = { transactionId: payment_intent };
+            const exPayment = await paymentCollection.findOne(
+              transactionIdQuery
+            );
 
-          if (exPayment) {
-            return res.send({
-              message: "This payment alrady save to database.",
+            if (exPayment) {
+              return res.send({
+                message: "This payment alrady save to database.",
+                transactionId: payment_intent,
+                amount: amount,
+              });
+            }
+
+            // user pakage update
+            const queryEmail = { email: customer_email };
+            const updatePakage = {
+              $set: {
+                subscription: metadata.subscriptionsName,
+                subscriptionDate: new Date(),
+                packageEmployees: Number(metadata.employeeLimit),
+              },
+            };
+            const updateResult = await usersCollection.updateOne(
+              queryEmail,
+              updatePakage
+            );
+
+            // add payment histories
+            const newPaynent = {
+              paymentUserEmail: customer_email,
               transactionId: payment_intent,
-              amount: amount,
+              pricingId: metadata.subscriptionsId,
+              paymentDate: new Date(),
+              pricingName: metadata.subscriptionsName,
+              employeeLimit: metadata.employeeLimit,
+            };
+
+            const newPaynentAdd = await paymentCollection.insertOne(newPaynent);
+
+            // console.log({ metadata });
+            res.send({
+              transactionId: payment_intent,
+              amount: Number(amount) / 100,
             });
           }
-
-          // user pakage update
-          const queryEmail = { email: customer_email };
-          const updatePakage = {
-            $set: {
-              subscription: metadata.subscriptionsName,
-              subscriptionDate: new Date(),
-            },
-            $inc: {
-              packageEmployees: Number(metadata.employeeLimit),
-            },
-          };
-          const updateResult = await usersCollection.updateOne(
-            queryEmail,
-            updatePakage
-          );
-
-          // add payment histories
-          const newPaynent = {
-            paymentUserEmail: customer_email,
-            transactionId: payment_intent,
-            pricingId: metadata.subscriptionsId,
-            pricingName: metadata.subscriptionsName,
-            employeeLimit: metadata.employeeLimit,
-          };
-
-          const newPaynentAdd = await paymentCollection.insertOne(newPaynent);
-
-          // console.log({ metadata });
-          res.send({
-            transactionId: payment_intent,
-            amount: Number(amount) / 100,
-          });
+        } catch {
+          res.status(500).send({ error: "Database patch filed." });
         }
-      } catch {
-        res.status(500).send({ error: "Database patch filed." });
       }
-    });
+    );
 
-    app.get("/payment", verifyFirebaseToken, async (req, res) => {
+    app.get("/payment", verifyFirebaseToken, verifyHR, async (req, res) => {
       try {
         const email = req.query.email;
         const query = { paymentUserEmail: email };
-        const result = await paymentCollection.find(query).toArray();
+        const result = await paymentCollection
+          .find(query)
+          .sort({ paymentDate: -1 })
+          .toArray();
         res.send(result);
       } catch {
         res.status(500).send({ error: "Database payment get is filed." });
@@ -610,7 +725,7 @@ async function run() {
 
         const result = await memberShipeCollection.find(query).toArray();
 
-        console.log(companyName);
+        // console.log(companyName);
         res.send(result);
       } catch {
         res.status(500).send({ error: "Database find filed" });
