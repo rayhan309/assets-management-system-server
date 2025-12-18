@@ -1,13 +1,17 @@
 const express = require("express");
+require("dotenv").config();
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 3000;
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.SRIPE_sdk);
 
-const serviceAccount = require("./firebase-admin.json");
+
+const decoded = Buffer.from(process.env.FIREBASE_SDK, 'base64').toString(
+	'utf8',
+)
+const serviceAccount = JSON.parse(decoded)
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -39,6 +43,20 @@ const verifyFirebaseToken = async (req, res, next) => {
   next();
 };
 
+// hr & emploey check
+const verifyEmployee = async (req, res, next) => {
+  const role = req.decoded_role;
+  console.log({userRole: role})
+
+  next();
+};
+const verifyHR = async (req, res, next) => {
+  const role = req.decoded_role;
+  console.log({userRole: role})
+
+  next();
+};
+
 // mogo DB
 const uri = process.env.DB_uri;
 
@@ -54,7 +72,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     const myCollections = client.db("corporate");
     const usersCollection = myCollections.collection("users");
@@ -63,6 +81,7 @@ async function run() {
     const priceingCollection = myCollections.collection("priceing");
     const approvedAssetsCollection = myCollections.collection("approvedAssets");
     const paymentCollection = myCollections.collection("payments");
+    const memberShipeCollection = myCollections.collection("memberShipe");
 
     // priching apis
     app.post("/priceing", async (req, res) => {
@@ -142,12 +161,17 @@ async function run() {
     app.get("/assets", verifyFirebaseToken, async (req, res) => {
       // console.log(req.headers.authorization);
       try {
-        const { email } = req.query;
+        const { email, search = "" } = req.query;
         const query = {};
 
         if (email) {
           query.hrEmail = email;
         }
+
+        if (search) {
+          query.productName = { $regex: search, $options: "i" };
+        }
+
         const result = await assetsCollection
           .find(query)
           .sort({ postAt: -1 })
@@ -196,10 +220,18 @@ async function run() {
     });
 
     app.get("/requests", verifyFirebaseToken, async (req, res) => {
-      const email = req.query.email;
-      const query = {};
+      const { email, type = "", search = "" } = req.query;
+      const query = {requestStatus: 'approved'};
       if (email) {
         query.requesterEmail = email;
+      }
+
+      if (search) {
+        query.assetName = { $regex: search, $options: "i" };
+      }
+
+      if (type) {
+        query.assetType = { $regex: type, $options: "i" };
       }
 
       const result = await requestsCollection.find(query).toArray();
@@ -222,27 +254,24 @@ async function run() {
 
     app.patch("/requests/:id/reject", verifyFirebaseToken, async (req, res) => {
       try {
-        const { status, hrEmail } = req.body;
+        const { status, requesterEmail, assetId } = req.body;
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
-        const updateDoc = {
+        const updaterequesterDoc = {
           $set: {
             requestStatus: status,
           },
         };
-        // console.log({ status: status, hrEmail: hrEmail });
+        const result = await requestsCollection.updateOne(
+          query,
+          updaterequesterDoc
+        );
 
-        const result = await requestsCollection.updateOne(query, updateDoc);
+        // // delete to current approved asset
+        const quantity = { assetId, employeeEmail: requesterEmail };
+        const resultDelete = await approvedAssetsCollection.deleteOne(quantity);
 
-        // pakege back to hr
-        // const queryEmail = { hrEmail };
-        // const updatePakage = {
-        //   $inc: {
-
-        //   }
-        // }
-        // const updateHrPakage = await usersCollection.updateOne(query);
-
+        // console.log(assetId, requesterEmail, quantity, resultDelete);
         res.send(result);
       } catch {
         res.status(500).send({ error: "Database employeis get failed" });
@@ -261,9 +290,15 @@ async function run() {
             assetType,
             requesterEmail,
             employeImage,
+            hrCompanyName,
+            requesterDateOfBirth,
             requesterName,
+            requesterPhoto,
             companyName,
-            assetImage = "kfskjdf",
+            userRole,
+            role,
+            dateOfBirth,
+            assetImage = "no-image",
           } = req.body;
 
           if (
@@ -320,7 +355,9 @@ async function run() {
           const updateEmployeDoc = {
             $set: {
               message: "affiliated",
-              companyStatus: "Companye Join",
+              companyStatus: "Companye Joined",
+              companyName: companyName,
+              joinedDate: new Date(),
             },
             $push: {
               newJoinCompaye: {
@@ -336,6 +373,7 @@ async function run() {
           );
 
           // console.log(updateEmployeDoc, requesterEmail);
+
           // add assigned assets collection
           const newAssignedAsset = {
             assetId,
@@ -354,6 +392,49 @@ async function run() {
 
           const newAssignedAssetInsert =
             await approvedAssetsCollection.insertOne(newAssignedAsset);
+
+          // add new employ collection in hr
+          // Photo, Name, Email, Position
+          const newUserToAddCompanye = {
+            name: requesterName,
+            email: requesterEmail,
+            photo: requesterPhoto,
+            position: role || "EMPLOYEE",
+            companyName,
+            memberShipeDate: new Date(),
+            dateOfBirth: requesterDateOfBirth || null,
+          };
+          const newHrToAddCompanye = {
+            name: requesterName,
+            email: hrEmail,
+            photo: employeImage,
+            companyName: hrCompanyName,
+            position: userRole || "HR_MANAGER",
+            memberShipeDate: new Date(),
+            dateOfBirth,
+          };
+
+          const hrQuery = { email: hrEmail, companyName: hrCompanyName };
+          const exsistHr = await memberShipeCollection.findOne(hrQuery);
+
+          if (!exsistHr) {
+            const newMemberShipeHr = await memberShipeCollection.insertOne(
+              newHrToAddCompanye
+            );
+          }
+
+          const exsistQuery = {
+            email: requesterEmail,
+            companyName: companyName,
+          };
+          const exsistUser = await memberShipeCollection.findOne(exsistQuery);
+
+          if (!exsistUser) {
+            const newMemberShipe = await memberShipeCollection.insertOne(
+              newUserToAddCompanye
+            );
+            // console.log({ newUserToAddCompanye });
+          }
 
           // console.log(hrEmail);
           res.send({ status: "ok" });
@@ -399,10 +480,10 @@ async function run() {
       }
     );
 
-    app.delete("/approvedAssets/:id", verifyFirebaseToken, async (req, res) => {
+    app.delete("/approvedAssets/:email", verifyFirebaseToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
+        const query = { _id: email };
         const result = await approvedAssetsCollection.deleteOne(query);
         res.send(result);
       } catch {
@@ -411,7 +492,7 @@ async function run() {
     });
 
     // payment apis
-    app.post("/create-checkout-session", async (req, res) => {
+    app.post("/create-checkout-session", verifyHR, async (req, res) => {
       const { price, customerEmail, name, _id, employeeLimit } = req.body;
       const amoutn = parseInt(price * 100);
       const session = await stripe.checkout.sessions.create({
@@ -521,13 +602,28 @@ async function run() {
       }
     });
 
+    // memberShipe user get
+    app.get("/my-teams", async (req, res) => {
+      try {
+        const { companyName } = req.query;
+        const query = { companyName };
+
+        const result = await memberShipeCollection.find(query).toArray();
+
+        console.log(companyName);
+        res.send(result);
+      } catch {
+        res.status(500).send({ error: "Database find filed" });
+      }
+    });
+
     // app.post('/payment');
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
