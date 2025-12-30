@@ -106,7 +106,7 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/priceing", verifyFirebaseToken, verifyHR, async (req, res) => {
+    app.get("/priceing", verifyFirebaseToken, async (req, res) => {
       const result = await priceingCollection.find().toArray();
       res.send(result);
     });
@@ -213,6 +213,7 @@ async function run() {
         }
 
         if (search) {
+          // console.log(search);
           query.productName = { $regex: search, $options: "i" };
         }
 
@@ -226,6 +227,36 @@ async function run() {
         res.status(500).send({ error: "Database insert failed" });
       }
     });
+
+
+    app.get("/all-assets", verifyFirebaseToken, async (req, res) => {
+      // console.log(req.headers.authorization);
+      try {
+        const { search = "", limit = 0, skip = 0 } = req.query;
+        const query = {};
+        // console.log({limit: parseInt(limit), skip: parseInt(skip)});
+
+        if (search) {
+          // console.log(search);
+          query.productName = { $regex: search, $options: "i" };
+        }
+
+        const result = await assetsCollection
+          .find(query)
+          .skip(parseInt(skip))
+          .limit(parseInt(limit))
+          .sort({ postAt: -1 })
+          .toArray();
+
+          const totaleAssets = await assetsCollection.countDocuments(query);
+        res.send({assets: result, assetsCount: totaleAssets});
+      } catch {
+        // console.log("mumma khaisu!");
+        res.status(500).send({ error: "Database insert failed" });
+      }
+    });
+
+
 
     app.get("/assets/type", verifyFirebaseToken, verifyHR, async (req, res) => {
       // console.log(req.headers.authorization);
@@ -280,7 +311,7 @@ async function run() {
     });
 
     // assets requests apis
-    app.post("/requests", async (req, res) => {
+    app.post("/requests", verifyFirebaseToken,  async (req, res) => {
       try {
         const newRequest = req.body;
 
@@ -321,10 +352,12 @@ async function run() {
       }
 
       if (search) {
+        console.log(search)
         query.assetName = { $regex: search, $options: "i" };
       }
 
       if (type) {
+        console.log(type)
         query.assetType = { $regex: type, $options: "i" };
       }
 
